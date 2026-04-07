@@ -6,7 +6,7 @@ from streamlit_folium import st_folium
 
 
 URL = "https://services3.arcgis.com/iuNbZYJOrAYBrPyC/arcgis/rest/services/survey123_7932a20fc6b14b7d9e48cbdb5e383a9c_results/FeatureServer/0/query"
-CORRIDOR_DISTANCE_M = 5
+CORRIDOR_DISTANCE_M = 10
 
 
 def generate_polyline(route_points):
@@ -62,14 +62,16 @@ def route_instruction():
         return "Keep clicking on the map to add more route points. When done, click **Finish Route**."
     if len(st.session_state.route_points) < 2:
         return "Your route needs at least 2 points."
-    return "Route finished. Click **Query POIs** to return obstacles within 5 meters of the route."
+    
+    
+    return "Route finished. Click **Query POIs** to return obstacles within 10 meters of the route."
 
 
 # -----------------------
 # Session state
 # -----------------------
 
-st.set_page_config(page_title="Route POI Demo", layout="wide")
+st.set_page_config(page_title="Demo", layout="wide")
 
 if "route_points" not in st.session_state:
     st.session_state.route_points = []   # list of {"lat": ..., "lon": ...}
@@ -88,16 +90,16 @@ if "last_click_key" not in st.session_state:
 # UI
 # -----------------------
 
-st.title("Route POI Demo")
-st.write("Build a route by clicking multiple points on the map, then query accessibility POIs near that route.")
+st.title("Demo")
+# st.write("Build a route by clicking multiple points on the map, then query accessibility POIs near that route.")
 
 left_col, right_col = st.columns([2, 1])
 
 with right_col:
-    st.subheader("Instructions")
-    st.info(route_instruction())
+    #st.subheader("Instructions")
+    #st.info(route_instruction())
 
-    st.write(f"Corridor distance: **{CORRIDOR_DISTANCE_M} meters**")
+    #st.write(f"Corridor distance: **{CORRIDOR_DISTANCE_M} meters**")
 
     c1, c2 = st.columns(2)
 
