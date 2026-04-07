@@ -6,7 +6,7 @@ from streamlit_folium import st_folium
 
 
 URL = "https://services3.arcgis.com/iuNbZYJOrAYBrPyC/arcgis/rest/services/survey123_7932a20fc6b14b7d9e48cbdb5e383a9c_results/FeatureServer/0/query"
-CORRIDOR_DISTANCE_M = 5
+CORRIDOR_DISTANCE_M = 10
 
 
 def generate_polyline(start, end):
