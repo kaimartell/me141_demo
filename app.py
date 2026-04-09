@@ -14,6 +14,8 @@ SIDEWALK_LAYER_ID = 15
 PATH_LAYER_ID = 16
 
 CORRIDOR_DISTANCE_M = 10
+DEFAULT_CENTER = [42.4065, -71.1205]
+DEFAULT_ZOOM = 17
 
 
 def generate_polyline(route_points):
@@ -33,6 +35,7 @@ def arcgis_intersects_params(route_points, out_fields="*", return_geometry=True)
         "units": "esriSRUnit_Meter",
         "outFields": out_fields,
         "returnGeometry": "true" if return_geometry else "false",
+        "outSR": 4326,
         "f": "json"
     }
 
@@ -50,8 +53,11 @@ def query_pois(route_points):
 
     results = []
     for feature in data.get("features", []):
-        attr = feature["attributes"]
-        geom = feature["geometry"]
+        attr = feature.get("attributes", {})
+        geom = feature.get("geometry", {})
+
+        if "x" not in geom or "y" not in geom:
+            continue
 
         results.append({
             "category": attr.get("obstacle_category"),
@@ -66,22 +72,6 @@ def query_pois(route_points):
     return results
 
 
-def ring_to_latlon(ring):
-    return [[pt[1], pt[0]] for pt in ring]
-
-
-def feature_geometry_to_latlon_polygons(feature):
-    geom = feature.get("geometry", {})
-    rings = geom.get("rings", [])
-    polygons = []
-
-    for ring in rings:
-        if ring:
-            polygons.append(ring_to_latlon(ring))
-
-    return polygons
-
-
 def query_basemap_layer(route_points, layer_id, out_fields):
     url = f"{BASEMAP_SERVICE}/{layer_id}/query"
     params = arcgis_intersects_params(
@@ -93,6 +83,33 @@ def query_basemap_layer(route_points, layer_id, out_fields):
     response = requests.get(url, params=params, timeout=30)
     response.raise_for_status()
     return response.json().get("features", [])
+
+
+def arcgis_feature_to_geojson(feature, classification, layer_id):
+    geom = feature.get("geometry", {})
+    attrs = feature.get("attributes", {})
+    rings = geom.get("rings", [])
+
+    if not rings:
+        return None
+
+    return {
+        "type": "Feature",
+        "properties": {
+            "layer": layer_id,
+            "classification": classification,
+            "objectid": attrs.get("OBJECTID"),
+            "type": attrs.get("Type"),
+            "name": attrs.get("Name"),
+            "campus": attrs.get("Campus"),
+            "source": attrs.get("Source"),
+            "updated": attrs.get("Updated"),
+        },
+        "geometry": {
+            "type": "Polygon",
+            "coordinates": rings
+        }
+    }
 
 
 def classify_route_surface(route_points):
@@ -114,13 +131,12 @@ def classify_route_surface(route_points):
 
     surface_types = []
     matched_segments = []
-    polygon_overlays = []
+    geojson_features = []
 
     if gravel_features:
         surface_types.append("GRAVEL")
         for feature in gravel_features:
-            attr = feature["attributes"]
-
+            attr = feature.get("attributes", {})
             matched_segments.append({
                 "layer": 14,
                 "classification": "GRAVEL",
@@ -132,17 +148,13 @@ def classify_route_surface(route_points):
                 "updated": attr.get("Updated")
             })
 
-            for polygon in feature_geometry_to_latlon_polygons(feature):
-                polygon_overlays.append({
-                    "layer": 14,
-                    "classification": "GRAVEL",
-                    "objectid": attr.get("OBJECTID"),
-                    "polygon": polygon
-                })
+            gj = arcgis_feature_to_geojson(feature, "GRAVEL", 14)
+            if gj:
+                geojson_features.append(gj)
 
     sidewalk_type_set = set()
     for feature in sidewalk_features:
-        attr = feature["attributes"]
+        attr = feature.get("attributes", {})
         surface_type = attr.get("Type")
 
         if surface_type:
@@ -159,17 +171,13 @@ def classify_route_surface(route_points):
             "updated": attr.get("Updated")
         })
 
-        for polygon in feature_geometry_to_latlon_polygons(feature):
-            polygon_overlays.append({
-                "layer": 15,
-                "classification": surface_type,
-                "objectid": attr.get("OBJECTID"),
-                "polygon": polygon
-            })
+        gj = arcgis_feature_to_geojson(feature, surface_type, 15)
+        if gj:
+            geojson_features.append(gj)
 
     path_type_set = set()
     for feature in path_features:
-        attr = feature["attributes"]
+        attr = feature.get("attributes", {})
         surface_type = attr.get("Type")
 
         if surface_type:
@@ -186,13 +194,9 @@ def classify_route_surface(route_points):
             "updated": attr.get("Updated")
         })
 
-        for polygon in feature_geometry_to_latlon_polygons(feature):
-            polygon_overlays.append({
-                "layer": 16,
-                "classification": surface_type,
-                "objectid": attr.get("OBJECTID"),
-                "polygon": polygon
-            })
+        gj = arcgis_feature_to_geojson(feature, surface_type, 16)
+        if gj:
+            geojson_features.append(gj)
 
     surface_types.extend(sorted(sidewalk_type_set))
     surface_types.extend(sorted(path_type_set))
@@ -205,7 +209,10 @@ def classify_route_surface(route_points):
         "has_path": any(t in deduped_surface_types for t in ["PAVED", "UNPAVED"]),
         "matched_segment_count": len(matched_segments),
         "matched_segments": matched_segments,
-        "polygon_overlays": polygon_overlays
+        "geojson": {
+            "type": "FeatureCollection",
+            "features": geojson_features
+        }
     }
 
 
@@ -233,13 +240,6 @@ def surface_color(classification):
     if classification == "SWALK":
         return "#636363"
     return "#ff7f0e"
-
-
-def mode_badge():
-    if st.session_state.collecting_route:
-        st.success("Route selection mode is ON. Click the map to add points.")
-    else:
-        st.info("Route selection mode is OFF.")
 
 
 # -----------------------
@@ -271,10 +271,11 @@ left_col, right_col = st.columns([2, 1])
 
 with right_col:
     st.subheader("Route Builder")
-    mode_badge()
 
     toggle_label = "Stop Selecting Points" if st.session_state.collecting_route else "Start Selecting Points"
-    if st.button(toggle_label, use_container_width=True, type="primary" if st.session_state.collecting_route else "secondary"):
+    toggle_type = "primary" if st.session_state.collecting_route else "secondary"
+
+    if st.button(toggle_label, use_container_width=True, type=toggle_type):
         st.session_state.collecting_route = not st.session_state.collecting_route
         if st.session_state.collecting_route:
             st.session_state.results = None
@@ -312,8 +313,10 @@ with right_col:
         ]
         try:
             st.session_state.results = query_route(route_points_arcgis)
+
             poi_count = len(st.session_state.results["pois"])
             surface_types = st.session_state.results["surface_summary"]["route_surface_types"]
+
             st.success(
                 f"Found {poi_count} POIs. "
                 f"Surface/path types: {surface_types if surface_types else 'None'}"
@@ -340,14 +343,10 @@ with right_col:
 with left_col:
     st.subheader("Map")
 
-    if st.session_state.collecting_route:
-        st.caption("Point selection is active. Click on the map to add route vertices.")
-
-    DEFAULT_CENTER = [42.4065, -71.1205]
-    m = folium.Map(location=DEFAULT_CENTER, zoom_start=17)
+    m = folium.Map(location=DEFAULT_CENTER, zoom_start=DEFAULT_ZOOM)
 
     for i, pt in enumerate(st.session_state.route_points):
-        label = f"Point {i+1}"
+        label = f"Point {i + 1}"
         folium.CircleMarker(
             [pt["lat"], pt["lon"]],
             radius=6,
@@ -367,25 +366,32 @@ with left_col:
 
     if st.session_state.results:
         surface_summary = st.session_state.results.get("surface_summary", {})
-        polygon_overlays = surface_summary.get("polygon_overlays", [])
+        geojson_fc = surface_summary.get("geojson")
 
-        for overlay in polygon_overlays:
-            classification = overlay["classification"]
-            color = surface_color(classification)
-            popup_text = (
-                f"Layer: {overlay['layer']}<br>"
-                f"Class: {classification}<br>"
-                f"ObjectID: {overlay['objectid']}"
-            )
-
-            folium.Polygon(
-                locations=overlay["polygon"],
-                color=color,
-                weight=2,
-                fill=True,
-                fill_opacity=0.35,
-                popup=popup_text,
-                tooltip=classification
+        if geojson_fc and geojson_fc.get("features"):
+            folium.GeoJson(
+                geojson_fc,
+                name="Matched path polygons",
+                style_function=lambda feature: {
+                    "color": surface_color(feature["properties"].get("classification")),
+                    "weight": 2,
+                    "fillColor": surface_color(feature["properties"].get("classification")),
+                    "fillOpacity": 0.35,
+                },
+                highlight_function=lambda feature: {
+                    "weight": 4,
+                    "fillOpacity": 0.5,
+                },
+                tooltip=folium.GeoJsonTooltip(
+                    fields=["classification", "layer", "objectid", "name"],
+                    aliases=["Class", "Layer", "ObjectID", "Name"],
+                    localize=True
+                ),
+                popup=folium.GeoJsonPopup(
+                    fields=["classification", "layer", "objectid", "type", "name", "campus", "source"],
+                    aliases=["Class", "Layer", "ObjectID", "Type", "Name", "Campus", "Source"],
+                    localize=True
+                )
             ).add_to(m)
 
     if st.session_state.results:
@@ -402,6 +408,8 @@ with left_col:
                 popup=popup_text,
                 icon=folium.Icon(color="red")
             ).add_to(m)
+
+    folium.LayerControl().add_to(m)
 
     map_data = st_folium(
         m,
