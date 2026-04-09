@@ -67,20 +67,18 @@ def query_pois(route_points):
 
 
 def ring_to_latlon(ring):
-    # ArcGIS polygon rings are [x, y] = [lon, lat]
     return [[pt[1], pt[0]] for pt in ring]
 
 
 def feature_geometry_to_latlon_polygons(feature):
     geom = feature.get("geometry", {})
     rings = geom.get("rings", [])
-    if not rings:
-        return []
-
     polygons = []
+
     for ring in rings:
         if ring:
             polygons.append(ring_to_latlon(ring))
+
     return polygons
 
 
@@ -118,7 +116,6 @@ def classify_route_surface(route_points):
     matched_segments = []
     polygon_overlays = []
 
-    # Layer 14: gravel
     if gravel_features:
         surface_types.append("GRAVEL")
         for feature in gravel_features:
@@ -143,7 +140,6 @@ def classify_route_surface(route_points):
                     "polygon": polygon
                 })
 
-    # Layer 15: sidewalks
     sidewalk_type_set = set()
     for feature in sidewalk_features:
         attr = feature["attributes"]
@@ -171,7 +167,6 @@ def classify_route_surface(route_points):
                 "polygon": polygon
             })
 
-    # Layer 16: paved/unpaved paths
     path_type_set = set()
     for feature in path_features:
         attr = feature["attributes"]
@@ -240,6 +235,13 @@ def surface_color(classification):
     return "#ff7f0e"
 
 
+def mode_badge():
+    if st.session_state.collecting_route:
+        st.success("Route selection mode is ON. Click the map to add points.")
+    else:
+        st.info("Route selection mode is OFF.")
+
+
 # -----------------------
 # Session state
 # -----------------------
@@ -268,33 +270,32 @@ st.title("Demo")
 left_col, right_col = st.columns([2, 1])
 
 with right_col:
+    st.subheader("Route Builder")
+    mode_badge()
+
+    toggle_label = "Stop Selecting Points" if st.session_state.collecting_route else "Start Selecting Points"
+    if st.button(toggle_label, use_container_width=True, type="primary" if st.session_state.collecting_route else "secondary"):
+        st.session_state.collecting_route = not st.session_state.collecting_route
+        if st.session_state.collecting_route:
+            st.session_state.results = None
+        st.rerun()
+
     c1, c2 = st.columns(2)
 
     with c1:
-        if st.button("Start New Route"):
-            st.session_state.route_points = []
-            st.session_state.results = None
-            st.session_state.collecting_route = True
-            st.session_state.last_click_key = None
-
-    with c2:
-        if st.button("Finish Route"):
-            st.session_state.collecting_route = False
-
-    c3, c4 = st.columns(2)
-
-    with c3:
-        if st.button("Undo Last Point"):
+        if st.button("Undo Last Point", use_container_width=True):
             if st.session_state.route_points:
                 st.session_state.route_points = st.session_state.route_points[:-1]
                 st.session_state.results = None
+                st.rerun()
 
-    with c4:
-        if st.button("Clear Route"):
+    with c2:
+        if st.button("Clear Route", use_container_width=True):
             st.session_state.route_points = []
             st.session_state.results = None
             st.session_state.collecting_route = False
             st.session_state.last_click_key = None
+            st.rerun()
 
     st.subheader("Route Points")
     if st.session_state.route_points:
@@ -305,13 +306,12 @@ with right_col:
 
     query_ready = len(st.session_state.route_points) >= 2 and not st.session_state.collecting_route
 
-    if st.button("Query Route Data", disabled=not query_ready):
+    if st.button("Query Route Data", disabled=not query_ready, use_container_width=True):
         route_points_arcgis = [
             [pt["lon"], pt["lat"]] for pt in st.session_state.route_points
         ]
         try:
             st.session_state.results = query_route(route_points_arcgis)
-
             poi_count = len(st.session_state.results["pois"])
             surface_types = st.session_state.results["surface_summary"]["route_surface_types"]
             st.success(
@@ -340,22 +340,24 @@ with right_col:
 with left_col:
     st.subheader("Map")
 
+    if st.session_state.collecting_route:
+        st.caption("Point selection is active. Click on the map to add route vertices.")
+
     DEFAULT_CENTER = [42.4065, -71.1205]
     m = folium.Map(location=DEFAULT_CENTER, zoom_start=17)
 
-    # Route vertices
     for i, pt in enumerate(st.session_state.route_points):
         label = f"Point {i+1}"
         folium.CircleMarker(
             [pt["lat"], pt["lon"]],
-            radius=5,
+            radius=6,
             popup=label,
             tooltip=label,
             color="blue",
-            fill=True
+            fill=True,
+            fill_opacity=1.0
         ).add_to(m)
 
-    # Route line
     if len(st.session_state.route_points) >= 2:
         folium.PolyLine(
             [[pt["lat"], pt["lon"]] for pt in st.session_state.route_points],
@@ -363,7 +365,6 @@ with left_col:
             weight=4
         ).add_to(m)
 
-    # Highlight matched polygons
     if st.session_state.results:
         surface_summary = st.session_state.results.get("surface_summary", {})
         polygon_overlays = surface_summary.get("polygon_overlays", [])
@@ -387,7 +388,6 @@ with left_col:
                 tooltip=classification
             ).add_to(m)
 
-    # POI markers
     if st.session_state.results:
         for poi in st.session_state.results.get("pois", []):
             lat = poi["location"]["lat"]
@@ -403,7 +403,14 @@ with left_col:
                 icon=folium.Icon(color="red")
             ).add_to(m)
 
-    map_data = st_folium(m, width=900, height=600, key="route_map")
+    map_data = st_folium(
+        m,
+        width=900,
+        height=600,
+        key="route_map",
+        returned_objects=["last_clicked"]
+    )
+
     clicked = map_data.get("last_clicked")
 
     if clicked and st.session_state.collecting_route:
@@ -418,3 +425,4 @@ with left_col:
                 "lon": clicked_lon
             })
             st.session_state.results = None
+            st.rerun()
